@@ -1,4 +1,4 @@
-//stage2
+//stage3
 use std::{
     error::Error,
     fs::File,
@@ -7,7 +7,7 @@ use std::{
 };
 
 use clap::Parser;
-use ortalib::{Chips, Mult, Round, Card, PokerHand, Rank, Suit, Enhancement, Edition};
+use ortalib::{Chips, Mult, Round, Card, PokerHand, Rank, Suit, Enhancement, Edition, Joker, JokerCard};
 
 #[derive(Parser)]
 struct Opts {
@@ -39,7 +39,7 @@ fn parse_round(opts: &Opts) -> Result<Round, Box<dyn Error>> {
     Ok(round)
 }
 
-// ==================== Stage 2 核心计分逻辑 ====================
+// ==================== Stage 3 核心计分逻辑 ====================
 
 fn score(round: Round) -> (Chips, Mult) {
     let played_cards = round.cards_played;
@@ -48,7 +48,7 @@ fn score(round: Round) -> (Chips, Mult) {
     let best_hand = determine_poker_hand(&played_cards);
     let (mut total_chips, mut total_mult) = best_hand.hand_value();
 
-    // 2. 找出在这个牌型中被成功“计分”的牌
+    // 2. 找出在这个牌型中被成功"计分"的牌
     let mut scored_cards = get_scored_cards(&played_cards, best_hand);
     
     // 【阶段二新增】石头牌（Stone）不属于任何牌型，但只要被打出就必须强制计分
@@ -94,7 +94,136 @@ fn score(round: Round) -> (Chips, Mult) {
         }
     }
 
+    // 【阶段三新增】步骤 4：处理 Joker 卡牌效果
+    // 这里实现的是 "Independent" 类型的 Joker，它们在所有卡牌计分后激活
+    for joker in &round.jokers {
+        apply_independent_joker(joker, &played_cards, best_hand, &mut total_chips, &mut total_mult);
+    }
+
     (total_chips, total_mult)
+}
+
+/// 【阶段三新增】应用 Independent 类型的 Joker 效果
+fn apply_independent_joker(
+    joker: &JokerCard,
+    played_cards: &[Card],
+    best_hand: PokerHand,
+    total_chips: &mut Chips,
+    total_mult: &mut Mult,
+) {
+    match joker.joker {
+        // 1. Joker: +4 Mult 无条件
+        Joker::Joker => {
+            *total_mult += 4.0;
+        }
+
+        // 2. Jolly Joker: +8 Mult if Pair 存在
+        Joker::JollyJoker => {
+            if contains_pair(played_cards) {
+                *total_mult += 8.0;
+            }
+        }
+
+        // 3. Zany Joker: +12 Mult if Three of a Kind 存在
+        Joker::ZanyJoker => {
+            if contains_three_of_a_kind(played_cards) {
+                *total_mult += 12.0;
+            }
+        }
+
+        // 4. Mad Joker: +10 Mult if Two Pair 存在
+        Joker::MadJoker => {
+            if contains_two_pair(played_cards) {
+                *total_mult += 10.0;
+            }
+        }
+
+        // 5. The Order: ×3 Mult if Straight 存在
+        Joker::TheOrder => {
+            if contains_straight(played_cards) {
+                *total_mult *= 3.0;
+            }
+        }
+
+        // 6. The Tribe: ×2 Mult if Flush 存在
+        Joker::TheTribe => {
+            if contains_flush(played_cards) {
+                *total_mult *= 2.0;
+            }
+        }
+
+        // 7. Sly Joker: +50 Chips if Pair 存在
+        Joker::SlyJoker => {
+            if contains_pair(played_cards) {
+                *total_chips += 50.0;
+            }
+        }
+
+        // 8. Wily Joker: +100 Chips if Three of a Kind 存在
+        Joker::WilyJoker => {
+            if contains_three_of_a_kind(played_cards) {
+                *total_chips += 100.0;
+            }
+        }
+
+        // 9. Clever Joker: +80 Chips if Two Pair 存在
+        Joker::CleverJoker => {
+            if contains_two_pair(played_cards) {
+                *total_chips += 80.0;
+            }
+        }
+
+        // 10. Devious Joker: +100 Chips if Straight 存在
+        Joker::DeviousJoker => {
+            if contains_straight(played_cards) {
+                *total_chips += 100.0;
+            }
+        }
+
+        // 11. Crafty Joker: +80 Chips if Flush 存在
+        Joker::CraftyJoker => {
+            if contains_flush(played_cards) {
+                *total_chips += 80.0;
+            }
+        }
+
+        // 12. Abstract Joker: +3 Mult for each Joker card
+        Joker::AbstractJoker => {
+            // 这个会在后面处理（需要知道 Joker 总数）
+        }
+
+        // 其他 Joker 暂不处理（Stage 4+）
+        _ => {}
+    }
+}
+
+/// 【阶段三新增】检查是否存在 Pair（任意两张相同点数的牌）
+fn contains_pair(cards: &[Card]) -> bool {
+    let counts = count_ranks(cards);
+    counts.values().any(|&count| count >= 2)
+}
+
+/// 【阶段三新增】检查是否存在 Three of a Kind
+fn contains_three_of_a_kind(cards: &[Card]) -> bool {
+    let counts = count_ranks(cards);
+    counts.values().any(|&count| count >= 3)
+}
+
+/// 【阶段三新增】检查是否存在 Two Pair（两个不同的 Pair）
+fn contains_two_pair(cards: &[Card]) -> bool {
+    let counts = count_ranks(cards);
+    let pair_count = counts.values().filter(|&&count| count >= 2).count();
+    pair_count >= 2
+}
+
+/// 【阶段三新增】检查是否存在 Straight
+fn contains_straight(cards: &[Card]) -> bool {
+    is_sequential(cards)
+}
+
+/// 【阶段三新增】检查是否存在 Flush
+fn contains_flush(cards: &[Card]) -> bool {
+    is_all_same_suit(cards)
 }
 
 /// 从高到低判定当前打出的牌属于哪种最佳牌型
@@ -303,14 +432,3 @@ fn get_scored_cards(cards: &[Card], hand: PokerHand) -> Vec<Card> {
         }
     }
 }
-
-
-
-
-
-
-
-
-
-
-
