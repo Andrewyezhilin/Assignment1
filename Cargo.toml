@@ -3,10 +3,6 @@ name = "ortalab"
 version = "0.1.0"
 edition = "2024"
 
-[[bin]]
-name = "ortalab"
-path = "main.rs"
-
 [dependencies]
 clap = { version = "4.5.9", features = ["derive"] }
 ortalib = "2.0.0"
