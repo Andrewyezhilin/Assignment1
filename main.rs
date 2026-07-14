@@ -19,6 +19,7 @@ struct Opts {
     explain: bool,
 }
 
+#[cfg(not(tarpaulin_include))]
 fn main() -> Result<(), Box<dyn Error>> {
     let opts = Opts::parse();
     let round = parse_round(&opts)?;
@@ -29,6 +30,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[cfg(not(tarpaulin_include))]
 fn parse_round(opts: &Opts) -> Result<Round, Box<dyn Error>> {
     let mut input = String::new();
     if opts.file == Path::new("-") {
@@ -1338,6 +1340,16 @@ jokers: [Blackboard, Flower Pot]
 "#
             ),
             1800.0
+        );
+        assert_eq!(
+            total(
+                r#"
+cards_played: [2♦, 3♣, 4♥, 5♠, 6♦]
+cards_held_in_hand: [A♣]
+jokers: [Blackboard]
+"#
+            ),
+            600.0
         );
     }
 

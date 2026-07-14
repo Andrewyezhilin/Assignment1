@@ -11,3 +11,6 @@ path = "main.rs"
 clap = { version = "4.5.9", features = ["derive"] }
 ortalib = "2.0.0"
 serde_yaml = "0.9.34"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tarpaulin_include)"] }
