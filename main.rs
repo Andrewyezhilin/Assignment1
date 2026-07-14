@@ -1326,4 +1326,71 @@ jokers: []
             PokerHand::Flush
         );
     }
+
+    #[test]
+    fn blackboard_accepts_wild_cards_and_flower_pot_scores() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [2♦, 3♣, 4♥, 5♠, 6♦]
+cards_held_in_hand: [A♥ Wild]
+jokers: [Blackboard, Flower Pot]
+"#
+            ),
+            1800.0
+        );
+    }
+
+    #[test]
+    fn scored_indices_cover_complete_and_rank_hands() {
+        for yaml in [
+            r#"
+cards_played: [7♦, 7♦, 7♦, 4♦, 4♦]
+cards_held_in_hand: []
+jokers: []
+"#,
+            r#"
+cards_played: [A♠, A♠, A♠, A♠, A♠]
+cards_held_in_hand: []
+jokers: []
+"#,
+            r#"
+cards_played: [K♥, K♣, K♦, 2♠, 2♦]
+cards_held_in_hand: []
+jokers: []
+"#,
+            r#"
+cards_played: [Q♠, J♠, 10♠, 9♠, 8♠]
+cards_held_in_hand: []
+jokers: []
+"#,
+            r#"
+cards_played: [A♠, A♥, A♥, A♣, A♦]
+cards_held_in_hand: []
+jokers: []
+"#,
+            r#"
+cards_played: [J♠, J♥, J♣, J♦, 3♣]
+cards_held_in_hand: []
+jokers: []
+"#,
+        ] {
+            let round = round(yaml);
+            let hand = determine_poker_hand(&round.cards_played, &round.jokers);
+            assert!(!get_scored_indices(&round.cards_played, hand, &round.jokers).is_empty());
+        }
+    }
+
+    #[test]
+    fn missing_rank_group_has_no_scored_indices() {
+        let round = round(
+            r#"
+cards_played: [A♠]
+cards_held_in_hand: []
+jokers: []
+"#,
+        );
+        let counts = count_ranks(&round.cards_played);
+        assert!(rank_group_indices(&round.cards_played, &counts, 5).is_empty());
+    }
 }
