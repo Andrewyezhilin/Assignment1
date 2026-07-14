@@ -288,10 +288,8 @@ fn apply_on_scored_joker(
             }
         }
 
-        Joker::SmileyFace => {
-            if is_card_face(card, round) {
-                *total_mult += 5.0;
-            }
+        Joker::SmileyFace if is_card_face(card, round) => {
+            *total_mult += 5.0;
         }
 
         _ => {}
@@ -322,10 +320,8 @@ fn apply_on_held_joker(
             }
         }
 
-        Joker::ShootTheMoon => {
-            if held_card.rank == Rank::Queen {
-                *total_mult += 13.0;
-            }
+        Joker::ShootTheMoon if held_card.rank == Rank::Queen => {
+            *total_mult += 13.0;
         }
 
         _ => {}
@@ -417,9 +413,7 @@ fn apply_independent_joker(
         }
 
         Joker::Blackboard => {
-            if held_cards.is_empty() {
-                *total_mult *= 3.0;
-            } else if held_cards.iter().all(|c| {
+            if held_cards.iter().all(|c| {
                 if c.enhancement == Some(Enhancement::Wild) {
                     true
                 } else {
