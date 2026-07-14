@@ -28,7 +28,6 @@ influenced by this challenge, with specific reference to sections of your code.
 > command-line parsing, YAML input, and displaying the final result, while
 > `src/lib.rs` exposes the `score` function and contains the poker-hand and Joker
 > scoring implementation.
->
 > I added 25 end-to-end tests in `tests/cli.rs`. These tests exercise all
 > poker-hand categories, card enhancements and editions, Joker activation phases,
 > Blueprint chains, retriggers, Four Fingers, Shortcut, Smeared Joker, Flower Pot,
@@ -58,7 +57,13 @@ differently now.
 If you want to let us know something else about your program, put it here!
 (Feel free to leave this blank)
 
->
+> To reproduce the reported coverage result, install cargo-tarpaulin with
+> `cargo install --locked cargo-tarpaulin` (or
+> `6991 cargo install --locked cargo-tarpaulin` on CSE). Run
+> `cargo tarpaulin --all-targets --fail-under 80 --out Stdout` to display the
+> coverage percentage in the terminal. An HTML report can instead be generated
+> with `cargo tarpaulin --all-targets --out Html` and opened from
+> `tarpaulin-report.html`.
 
 ## Other Comments
 
