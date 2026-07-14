@@ -41,16 +41,12 @@ If you made any design decisions which you now regret making; but don't to go ba
 let us know here. You can make up your design marks by acknowledging up to 5 things you would do
 differently now.
 
-> - `src/lib.rs` is still relatively large. I would separate poker-hand detection,
->   card scoring, and Joker activation into dedicated modules.
-> - Several functions repeatedly scan the Joker list for passive effects. I would
->   precompute these effects in a scoring context.
-> - Chips and Mult are passed separately through several functions. A dedicated
->   `Score` type could encapsulate addition and multiplication operations.
-> - Some functions use multiple Boolean parameters for active rules. A `Rules`
->   structure would express these combinations more clearly.
-> - The optional `--explain` argument is parsed but detailed scoring explanations
->   are not implemented.
+> - `src/lib.rs` is relatively large and contains poker-hand detection, card
+>   scoring, and Joker activation logic.
+> - Several functions scan the Joker list repeatedly when handling passive
+>   effects.
+> - Chips and Mult are passed separately through several scoring functions rather
+>   than being represented as a single score value.
 
 ## Questions to the marker
 
