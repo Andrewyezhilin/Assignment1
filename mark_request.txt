@@ -1,0 +1,69 @@
+# Ortalab Mark Request
+
+## Which stages are complete?
+
+Please mark stages that are complete with an [X].
+Stages that are partially complete should be marked with a [?].
+Stages that are not complete should be left blank (like [ ]).
+
+> [X] Stage 1 (Basic Scoring)
+> [X] Stage 2 (Modifiers)
+> [X] Stage 3 (Easy Jokers)
+> [X] Stage 4 (Medium Jokers)
+> [X] Stage 5 (Hard Jokers)
+
+## Design Excellence
+
+If you have completed a "design excellence" task, please write what
+the task was below (note, it MUST be on the list in the assignment or
+approved by COMP6991 staff).
+
+> Achieved over 80% application test coverage using cargo-tarpaulin.
+
+Please write a paragraph or two (max. 250 words) describing how your design was
+influenced by this challenge, with specific reference to sections of your code.
+
+> I structured the program as a library and a small command-line application to
+> make the scoring logic independently testable. `src/main.rs` is responsible for
+> command-line parsing, YAML input, and displaying the final result, while
+> `src/lib.rs` exposes the `score` function and contains the poker-hand and Joker
+> scoring implementation.
+>
+> I added 25 end-to-end tests in `tests/cli.rs`. These tests exercise all
+> poker-hand categories, card enhancements and editions, Joker activation phases,
+> Blueprint chains, retriggers, Four Fingers, Shortcut, Smeared Joker, Flower Pot,
+> file input, and standard input. The tests use the public `score` interface rather
+> than exposing private implementation details solely for testing. cargo-tarpaulin
+> reports 86.32% line coverage, with 385 of 446 measured lines covered.
+
+## Design Limitations
+
+If you made any design decisions which you now regret making; but don't to go back and change them,
+let us know here. You can make up your design marks by acknowledging up to 5 things you would do
+differently now.
+
+> - `src/lib.rs` is still relatively large. I would separate poker-hand detection,
+>   card scoring, and Joker activation into dedicated modules.
+> - Several functions repeatedly scan the Joker list for passive effects. I would
+>   precompute these effects in a scoring context.
+> - Chips and Mult are passed separately through several functions. A dedicated
+>   `Score` type could encapsulate addition and multiplication operations.
+> - Some functions use multiple Boolean parameters for active rules. A `Rules`
+>   structure would express these combinations more clearly.
+> - The optional `--explain` argument is parsed but detailed scoring explanations
+>   are not implemented.
+
+## Questions to the marker
+
+If you want to let us know something else about your program, put it here!
+(Feel free to leave this blank)
+
+>
+
+## Other Comments
+
+If you want to let us know something else about your program, put it here!
+(Feel free to leave this blank)
+
+> All 206 supplied autotests pass. All 25 submitted tests also pass, and the
+> project passes cargo build, cargo clippy, and rustfmt checks.
