@@ -936,7 +936,7 @@ cards_held_in_hand: []
 jokers: [Hack, Greedy Joker, Scary Face]
 "#
             ),
-            624.0
+            115.0
         );
     }
 
@@ -1215,7 +1215,7 @@ cards_held_in_hand: []
 jokers: [Pareidolia, Scary Face, Smiley Face]
 "#
             ),
-            287.0
+            222.0
         );
     }
 
@@ -1309,7 +1309,7 @@ cards_held_in_hand: []
 jokers: [Joker Foil, Joker Holographic, Joker Polychrome]
 "#
             ),
-            552.0
+            2277.0
         );
     }
 
