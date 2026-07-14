@@ -7,7 +7,9 @@ use std::{
 };
 
 use clap::Parser;
-use ortalib::{Chips, Mult, Round, Card, PokerHand, Rank, Suit, Enhancement, Edition, Joker, JokerCard};
+use ortalib::{
+    Card, Chips, Edition, Enhancement, Joker, JokerCard, Mult, PokerHand, Rank, Round, Suit,
+};
 
 #[derive(Parser)]
 struct Opts {
@@ -17,6 +19,7 @@ struct Opts {
     explain: bool,
 }
 
+#[cfg(not(tarpaulin_include))]
 fn main() -> Result<(), Box<dyn Error>> {
     let opts = Opts::parse();
     let round = parse_round(&opts)?;
@@ -27,6 +30,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[cfg(not(tarpaulin_include))]
 fn parse_round(opts: &Opts) -> Result<Round, Box<dyn Error>> {
     let mut input = String::new();
     if opts.file == Path::new("-") {
@@ -44,66 +48,58 @@ fn parse_round(opts: &Opts) -> Result<Round, Box<dyn Error>> {
 fn score(round: Round) -> (Chips, Mult) {
     let played_cards = round.cards_played.clone();
 
-    // 1. 判定最优牌型并获取其基础 Chips 和 Mult
     let best_hand = determine_poker_hand(&played_cards, &round.jokers);
     let (mut total_chips, mut total_mult) = best_hand.hand_value();
 
-    // 2. 找出在这个牌型中被成功"计分"的牌
-    let mut scored_cards = get_scored_cards(&played_cards, best_hand);
-    
-    // 石头牌不属于任何牌型，但只要被打出就必须强制计分
-    for card in &played_cards {
-        if card.enhancement == Some(Enhancement::Stone) && !scored_cards.contains(card) {
-            scored_cards.push(*card);
-        }
-    }
-
-    // 【Stage 5】检查 Splash 是否激活（所有卡牌都计分）
+    let mut scored_indices = get_scored_indices(&played_cards, best_hand, &round.jokers);
     let splash_active = round.jokers.iter().any(|j| j.joker == Joker::Splash);
-    if splash_active {
-        for card in &played_cards {
-            if !scored_cards.contains(card) && card.enhancement != Some(Enhancement::Stone) {
-                scored_cards.push(*card);
-            }
+    for (index, card) in played_cards.iter().enumerate() {
+        if (splash_active || card_is_stone(card)) && !scored_indices.contains(&index) {
+            scored_indices.push(index);
         }
     }
+    scored_indices.sort_unstable();
 
-    // 追踪是否已经应用了 Photograph 的第一张面卡
-    let mut photograph_triggered = false;
-
-    // 3. 按照顺序应用打出牌的各种强化和版本（步骤 2.1-2.3）和 On Scored Jokers
-    for (index, card) in scored_cards.iter().enumerate() {
-        apply_card_scoring(&round, *card, &mut total_chips, &mut total_mult, &mut photograph_triggered, index == 0);
+    let first_face_index = scored_indices
+        .iter()
+        .copied()
+        .find(|&index| is_card_face(played_cards[index], &round));
+    for (position, &index) in scored_indices.iter().enumerate() {
+        apply_card_scoring(
+            &round,
+            played_cards[index],
+            &mut total_chips,
+            &mut total_mult,
+            position == 0,
+            Some(index) == first_face_index,
+        );
     }
 
-    // 步骤 3.1：遍历留在手里的牌计算手牌钢铁卡能力和 On Held Jokers
-    for held_card in &round.cards_held_in_hand {
-        if held_card.enhancement == Some(Enhancement::Steel) {
-            total_mult *= 1.5;
-        }
-
-        // On Held Jokers 激活
-        for joker in &round.jokers {
-            apply_on_held_joker(joker, *held_card, &round.cards_held_in_hand, &mut total_chips, &mut total_mult);
-        }
-    }
-
-    // 【Stage 5】检查 Mime 是否激活（重新触发所有手牌能力）
-    let mime_count = round.jokers.iter().filter(|j| j.joker == Joker::Mime).count();
-    for _ in 0..mime_count {
-        for held_card in &round.cards_held_in_hand {
+    let mime_count = effective_jokers(&round.jokers)
+        .filter(|&joker| joker == Joker::Mime)
+        .count();
+    for (held_index, held_card) in round.cards_held_in_hand.iter().enumerate() {
+        for _ in 0..=mime_count {
             if held_card.enhancement == Some(Enhancement::Steel) {
                 total_mult *= 1.5;
             }
-
-            for joker in &round.jokers {
-                apply_on_held_joker(joker, *held_card, &round.cards_held_in_hand, &mut total_chips, &mut total_mult);
+            for joker in effective_jokers(&round.jokers) {
+                apply_on_held_joker(
+                    joker,
+                    held_index,
+                    *held_card,
+                    &round.cards_held_in_hand,
+                    &mut total_mult,
+                );
             }
         }
     }
 
-    // 步骤 4.1：处理 Joker 的版本效果（Foil, Holographic）
-    for joker in &round.jokers {
+    let scored_cards: Vec<Card> = scored_indices
+        .iter()
+        .map(|&index| played_cards[index])
+        .collect();
+    for (index, joker) in round.jokers.iter().enumerate() {
         if let Some(edition) = joker.edition {
             match edition {
                 Edition::Foil => total_chips += 50.0,
@@ -111,19 +107,19 @@ fn score(round: Round) -> (Chips, Mult) {
                 Edition::Polychrome => {}
             }
         }
-    }
-
-    // 步骤 4.2：处理 Independent 类型的 Joker 效果
-    for joker in &round.jokers {
-        apply_independent_joker(joker, &played_cards, &round.cards_held_in_hand, &mut total_chips, &mut total_mult, round.jokers.len());
-    }
-
-    // 步骤 4.3：处理 Joker 的 Polychrome 版本效果
-    for joker in &round.jokers {
-        if let Some(edition) = joker.edition {
-            if edition == Edition::Polychrome {
-                total_mult *= 1.5;
-            }
+        if let Some(ability) = effective_joker_at(&round.jokers, index) {
+            apply_independent_joker(
+                ability,
+                &played_cards,
+                &scored_cards,
+                &round.cards_held_in_hand,
+                &round.jokers,
+                &mut total_chips,
+                &mut total_mult,
+            );
+        }
+        if joker.edition == Some(Edition::Polychrome) {
+            total_mult *= 1.5;
         }
     }
 
@@ -136,8 +132,35 @@ fn apply_card_scoring(
     card: Card,
     total_chips: &mut Chips,
     total_mult: &mut Mult,
-    photograph_triggered: &mut bool,
     is_first_card: bool,
+    is_first_face: bool,
+) {
+    trigger_scored_card(round, card, total_chips, total_mult, is_first_face);
+
+    let retrigger_count: usize = effective_jokers(&round.jokers)
+        .map(|joker| match joker {
+            Joker::SockAndBuskin if is_card_face(card, round) => 1,
+            Joker::Hack
+                if !card_is_stone(&card)
+                    && matches!(card.rank, Rank::Two | Rank::Three | Rank::Four | Rank::Five) =>
+            {
+                1
+            }
+            Joker::HangingChad if is_first_card => 2,
+            _ => 0,
+        })
+        .sum();
+    for _ in 0..retrigger_count {
+        trigger_scored_card(round, card, total_chips, total_mult, is_first_face);
+    }
+}
+
+fn trigger_scored_card(
+    round: &Round,
+    card: Card,
+    total_chips: &mut Chips,
+    total_mult: &mut Mult,
+    is_first_face: bool,
 ) {
     // 步骤 2.1：基础筹码
     if card.enhancement == Some(Enhancement::Stone) {
@@ -165,52 +188,8 @@ fn apply_card_scoring(
         }
     }
 
-    // 步骤 2.4：On Scored Jokers 激活
-    apply_on_scored_jokers(round, card, total_chips, total_mult, photograph_triggered, is_first_card);
-}
-
-/// 应用所有 On Scored Jokers
-fn apply_on_scored_jokers(
-    round: &Round,
-    card: Card,
-    total_chips: &mut Chips,
-    total_mult: &mut Mult,
-    photograph_triggered: &mut bool,
-    is_first_card: bool,
-) {
-    for joker in &round.jokers {
-        apply_on_scored_joker(joker, card, total_chips, total_mult, photograph_triggered, round.jokers.len(), &round.jokers);
-    }
-
-    // 【Stage 5】处理 Retriggers
-    let mut retrigger_count = 0;
-
-    // Sock and Buskin: Retrigger all scoring face cards
-    let sock_buskin_count = round.jokers.iter().filter(|j| j.joker == Joker::SockAndBuskin).count();
-    let is_face_card = is_card_face(card, round);
-    if is_face_card {
-        retrigger_count += sock_buskin_count;
-    }
-
-    // Hack: Retrigger each scored card that is a 2, 3, 4, or 5
-    let hack_count = round.jokers.iter().filter(|j| j.joker == Joker::Hack).count();
-    match card.rank {
-        Rank::Two | Rank::Three | Rank::Four | Rank::Five => {
-            retrigger_count += hack_count;
-        }
-        _ => {}
-    }
-
-    // Hanging Chad: Retrigger the first scored card 2 additional times
-    if is_first_card && round.jokers.iter().any(|j| j.joker == Joker::HangingChad) {
-        retrigger_count += 2;
-    }
-
-    // 执行 Retriggers（重复应用 On Scored Jokers）
-    for _ in 0..retrigger_count {
-        for joker in &round.jokers {
-            apply_on_scored_joker(joker, card, total_chips, total_mult, photograph_triggered, round.jokers.len(), &round.jokers);
-        }
+    for joker in effective_jokers(&round.jokers) {
+        apply_on_scored_joker(joker, card, round, total_chips, total_mult, is_first_face);
     }
 }
 
@@ -224,71 +203,71 @@ fn is_card_face(card: Card, round: &Round) -> bool {
 
 /// 应用 On Scored 类型的 Joker 效果
 fn apply_on_scored_joker(
-    joker: &JokerCard,
+    joker: Joker,
     card: Card,
+    round: &Round,
     total_chips: &mut Chips,
     total_mult: &mut Mult,
-    photograph_triggered: &mut bool,
-    _joker_count: usize,
-    all_jokers: &[JokerCard],
+    is_first_face: bool,
 ) {
-    match joker.joker {
+    if card_is_stone(&card) {
+        return;
+    }
+    let smeared = round
+        .jokers
+        .iter()
+        .any(|joker| joker.joker == Joker::SmearedJoker);
+    match joker {
         Joker::GreedyJoker => {
-            if card_matches_suit(card, Suit::Diamonds) {
+            if card_matches_suit(card, Suit::Diamonds, smeared) {
                 *total_mult += 3.0;
             }
         }
 
         Joker::LustyJoker => {
-            if card_matches_suit(card, Suit::Hearts) {
+            if card_matches_suit(card, Suit::Hearts, smeared) {
                 *total_mult += 3.0;
             }
         }
 
         Joker::Arrowhead => {
-            if card_matches_suit(card, Suit::Spades) {
+            if card_matches_suit(card, Suit::Spades, smeared) {
                 *total_chips += 50.0;
             }
         }
 
         Joker::OnyxAgate => {
-            if card_matches_suit(card, Suit::Clubs) {
+            if card_matches_suit(card, Suit::Clubs, smeared) {
                 *total_mult += 7.0;
             }
         }
 
-        Joker::Fibonacci => {
-            match card.rank {
-                Rank::Ace | Rank::Two | Rank::Three | Rank::Five | Rank::Eight => {
-                    *total_mult += 8.0;
-                }
-                _ => {}
+        Joker::Fibonacci => match card.rank {
+            Rank::Ace | Rank::Two | Rank::Three | Rank::Five | Rank::Eight => {
+                *total_mult += 8.0;
             }
-        }
+            _ => {}
+        },
 
         Joker::ScaryFace => {
-            if card.rank.is_face() {
+            if is_card_face(card, round) {
                 *total_chips += 30.0;
             }
         }
 
-        Joker::EvenSteven => {
-            match card.rank {
-                Rank::Two | Rank::Four | Rank::Six | Rank::Eight | Rank::Ten => {
-                    *total_mult += 4.0;
-                }
-                _ => {}
+        Joker::EvenSteven => match card.rank {
+            Rank::Two | Rank::Four | Rank::Six | Rank::Eight | Rank::Ten => {
+                *total_mult += 4.0;
             }
-        }
+            _ => {}
+        },
 
-        Joker::OddTodd => {
-            match card.rank {
-                Rank::Ace | Rank::Three | Rank::Five | Rank::Seven | Rank::Nine => {
-                    *total_chips += 31.0;
-                }
-                _ => {}
+        Joker::OddTodd => match card.rank {
+            Rank::Ace | Rank::Three | Rank::Five | Rank::Seven | Rank::Nine => {
+                *total_chips += 31.0;
             }
-        }
+            _ => {}
+        },
 
         Joker::Scholar => {
             if card.rank == Rank::Ace {
@@ -297,39 +276,22 @@ fn apply_on_scored_joker(
             }
         }
 
-        Joker::WalkieTalkie => {
-            match card.rank {
-                Rank::Ten | Rank::Four => {
-                    *total_chips += 10.0;
-                    *total_mult += 4.0;
-                }
-                _ => {}
+        Joker::WalkieTalkie => match card.rank {
+            Rank::Ten | Rank::Four => {
+                *total_chips += 10.0;
+                *total_mult += 4.0;
             }
-        }
+            _ => {}
+        },
 
         Joker::Photograph => {
-            if card.rank.is_face() && !*photograph_triggered {
-                *photograph_triggered = true;
+            if is_first_face {
                 *total_mult *= 2.0;
             }
         }
 
-        Joker::SmileyFace => {
-            if card.rank.is_face() {
-                *total_mult += 5.0;
-            }
-        }
-
-        Joker::Blueprint => {
-            // Blueprint 复制右边（后面）的 Joker
-            // 这里简单处理：找到 Blueprint 的索引，然后复制下一个 Joker
-            if let Some(pos) = all_jokers.iter().position(|j| std::ptr::eq(j, joker)) {
-                if pos + 1 < all_jokers.len() {
-                    let next_joker = &all_jokers[pos + 1];
-                    // 递归调用以复制下一个 Joker 的效果
-                    apply_on_scored_joker(next_joker, card, total_chips, total_mult, photograph_triggered, _joker_count, all_jokers);
-                }
-            }
+        Joker::SmileyFace if is_card_face(card, round) => {
+            *total_mult += 5.0;
         }
 
         _ => {}
@@ -338,24 +300,19 @@ fn apply_on_scored_joker(
 
 /// 应用 On Held 类型的 Joker 效果
 fn apply_on_held_joker(
-    joker: &JokerCard,
+    joker: Joker,
+    held_index: usize,
     held_card: Card,
     held_cards: &[Card],
-    total_chips: &mut Chips,
     total_mult: &mut Mult,
 ) {
-    match joker.joker {
+    if card_is_stone(&held_card) {
+        return;
+    }
+    match joker {
         Joker::RaisedFist => {
-            if let Some(lowest_card) = get_lowest_rank_card(held_cards) {
-                if held_card.rank == lowest_card.rank {
-                    let lowest_cards: Vec<Card> = held_cards.iter()
-                        .filter(|c| c.rank == lowest_card.rank)
-                        .copied()
-                        .collect();
-                    if held_card == *lowest_cards.last().unwrap() {
-                        *total_mult += 2.0 * held_card.rank.rank_value();
-                    }
-                }
+            if Some(held_index) == get_lowest_rank_card_index(held_cards) {
+                *total_mult += 2.0 * held_card.rank.rank_value();
             }
         }
 
@@ -365,10 +322,8 @@ fn apply_on_held_joker(
             }
         }
 
-        Joker::ShootTheMoon => {
-            if held_card.rank == Rank::Queen {
-                *total_mult += 13.0;
-            }
+        Joker::ShootTheMoon if held_card.rank == Rank::Queen => {
+            *total_mult += 13.0;
         }
 
         _ => {}
@@ -377,14 +332,20 @@ fn apply_on_held_joker(
 
 /// 应用 Independent 类型的 Joker 效果
 fn apply_independent_joker(
-    joker: &JokerCard,
+    joker: Joker,
     played_cards: &[Card],
+    scored_cards: &[Card],
     held_cards: &[Card],
+    jokers: &[JokerCard],
     total_chips: &mut Chips,
     total_mult: &mut Mult,
-    joker_count: usize,
 ) {
-    match joker.joker {
+    let four_fingers = jokers.iter().any(|joker| joker.joker == Joker::FourFingers);
+    let shortcut = jokers.iter().any(|joker| joker.joker == Joker::Shortcut);
+    let smeared = jokers
+        .iter()
+        .any(|joker| joker.joker == Joker::SmearedJoker);
+    match joker {
         Joker::Joker => {
             *total_mult += 4.0;
         }
@@ -408,13 +369,13 @@ fn apply_independent_joker(
         }
 
         Joker::TheOrder => {
-            if contains_straight(played_cards) {
+            if find_straight_indices(played_cards, four_fingers, shortcut).is_some() {
                 *total_mult *= 3.0;
             }
         }
 
         Joker::TheTribe => {
-            if contains_flush(played_cards) {
+            if find_flush_indices(played_cards, four_fingers, smeared).is_some() {
                 *total_mult *= 2.0;
             }
         }
@@ -438,25 +399,23 @@ fn apply_independent_joker(
         }
 
         Joker::DeviousJoker => {
-            if contains_straight(played_cards) {
+            if find_straight_indices(played_cards, four_fingers, shortcut).is_some() {
                 *total_chips += 100.0;
             }
         }
 
         Joker::CraftyJoker => {
-            if contains_flush(played_cards) {
+            if find_flush_indices(played_cards, four_fingers, smeared).is_some() {
                 *total_chips += 80.0;
             }
         }
 
         Joker::AbstractJoker => {
-            *total_mult += 3.0 * joker_count as f64;
+            *total_mult += 3.0 * jokers.len() as f64;
         }
 
         Joker::Blackboard => {
-            if held_cards.is_empty() {
-                *total_mult *= 3.0;
-            } else if held_cards.iter().all(|c| {
+            if held_cards.iter().all(|c| {
                 if c.enhancement == Some(Enhancement::Wild) {
                     true
                 } else {
@@ -468,19 +427,21 @@ fn apply_independent_joker(
         }
 
         Joker::FlowerPot => {
-            let has_diamonds = played_cards.iter().any(|c| card_matches_suit(*c, Suit::Diamonds));
-            let has_clubs = played_cards.iter().any(|c| card_matches_suit(*c, Suit::Clubs));
-            let has_hearts = played_cards.iter().any(|c| card_matches_suit(*c, Suit::Hearts));
-            let has_spades = played_cards.iter().any(|c| card_matches_suit(*c, Suit::Spades));
-            
-            if has_diamonds && has_clubs && has_hearts && has_spades {
+            if flower_pot_matches(scored_cards, smeared) {
                 *total_mult *= 3.0;
             }
         }
 
-        Joker::FourFingers | Joker::Shortcut | Joker::Mime | Joker::Pareidolia | 
-        Joker::Splash | Joker::SockAndBuskin | Joker::Hack | Joker::HangingChad | 
-        Joker::SmearedJoker | Joker::Blueprint => {
+        Joker::FourFingers
+        | Joker::Shortcut
+        | Joker::Mime
+        | Joker::Pareidolia
+        | Joker::Splash
+        | Joker::SockAndBuskin
+        | Joker::Hack
+        | Joker::HangingChad
+        | Joker::SmearedJoker
+        | Joker::Blueprint => {
             // 这些是效果类 Joker，不在这里给出奖励
         }
 
@@ -488,34 +449,97 @@ fn apply_independent_joker(
     }
 }
 
-/// 检查卡是否匹配特定花色（考虑 Wild）
-fn card_matches_suit(card: Card, suit: Suit) -> bool {
-    if card.enhancement == Some(Enhancement::Wild) {
+fn card_matches_suit(card: Card, suit: Suit, smeared: bool) -> bool {
+    if card_is_stone(&card) {
+        false
+    } else if card.enhancement == Some(Enhancement::Wild) {
         true
+    } else if smeared {
+        matches!(
+            (card.suit, suit),
+            (Suit::Hearts | Suit::Diamonds, Suit::Hearts | Suit::Diamonds)
+                | (Suit::Spades | Suit::Clubs, Suit::Spades | Suit::Clubs)
+        )
     } else {
         card.suit == suit
     }
 }
 
+fn flower_pot_matches(cards: &[Card], smeared: bool) -> bool {
+    const SUITS: [Suit; 4] = [Suit::Diamonds, Suit::Clubs, Suit::Hearts, Suit::Spades];
+
+    fn assign(suit_index: usize, cards: &[Card], smeared: bool, used: &mut [bool]) -> bool {
+        if suit_index == SUITS.len() {
+            return true;
+        }
+        for (card_index, card) in cards.iter().enumerate() {
+            if !used[card_index] && card_matches_suit(*card, SUITS[suit_index], smeared) {
+                used[card_index] = true;
+                if assign(suit_index + 1, cards, smeared, used) {
+                    return true;
+                }
+                used[card_index] = false;
+            }
+        }
+        false
+    }
+
+    cards.len() >= 4 && assign(0, cards, smeared, &mut vec![false; cards.len()])
+}
+
+fn effective_jokers(jokers: &[JokerCard]) -> impl Iterator<Item = Joker> + '_ {
+    (0..jokers.len()).filter_map(|index| effective_joker_at(jokers, index))
+}
+
+fn effective_joker_at(jokers: &[JokerCard], source: usize) -> Option<Joker> {
+    let mut index = source;
+    while jokers.get(index)?.joker == Joker::Blueprint {
+        index += 1;
+    }
+    let copied = index != source;
+    let ability = jokers.get(index)?.joker;
+    if copied
+        && matches!(
+            ability,
+            Joker::FourFingers
+                | Joker::Shortcut
+                | Joker::Pareidolia
+                | Joker::Splash
+                | Joker::SmearedJoker
+        )
+    {
+        None
+    } else {
+        Some(ability)
+    }
+}
+
 /// 获取手中最低点数的卡
-fn get_lowest_rank_card(cards: &[Card]) -> Option<Card> {
-    cards.iter()
-        .min_by_key(|c| match c.rank {
-            Rank::Ace => 14,
-            Rank::Two => 2,
-            Rank::Three => 3,
-            Rank::Four => 4,
-            Rank::Five => 5,
-            Rank::Six => 6,
-            Rank::Seven => 7,
-            Rank::Eight => 8,
-            Rank::Nine => 9,
-            Rank::Ten => 10,
-            Rank::Jack => 11,
-            Rank::Queen => 12,
-            Rank::King => 13,
-        })
-        .copied()
+fn get_lowest_rank_card_index(cards: &[Card]) -> Option<usize> {
+    cards
+        .iter()
+        .enumerate()
+        .filter(|(_, card)| !card_is_stone(card))
+        .min_by_key(|(index, card)| (rank_order(card.rank), std::cmp::Reverse(*index)))
+        .map(|(index, _)| index)
+}
+
+fn rank_order(rank: Rank) -> u8 {
+    match rank {
+        Rank::Ace => 14,
+        Rank::Two => 2,
+        Rank::Three => 3,
+        Rank::Four => 4,
+        Rank::Five => 5,
+        Rank::Six => 6,
+        Rank::Seven => 7,
+        Rank::Eight => 8,
+        Rank::Nine => 9,
+        Rank::Ten => 10,
+        Rank::Jack => 11,
+        Rank::Queen => 12,
+        Rank::King => 13,
+    }
 }
 
 /// 检查是否存在 Pair
@@ -537,34 +561,46 @@ fn contains_two_pair(cards: &[Card]) -> bool {
     pair_count >= 2
 }
 
-/// 检查是否存在 Straight
-fn contains_straight(cards: &[Card]) -> bool {
-    is_sequential(cards, false, false)
-}
-
-/// 检查是否存在 Flush
-fn contains_flush(cards: &[Card]) -> bool {
-    is_all_same_suit(cards, false)
-}
-
 /// 从高到低判定当前打出的牌属于哪种最佳牌型
 fn determine_poker_hand(cards: &[Card], jokers: &[JokerCard]) -> PokerHand {
     let four_fingers = jokers.iter().any(|j| j.joker == Joker::FourFingers);
     let shortcut = jokers.iter().any(|j| j.joker == Joker::Shortcut);
     let smeared = jokers.iter().any(|j| j.joker == Joker::SmearedJoker);
 
-    if is_flush_five(cards) { return PokerHand::FlushFive; }
-    if is_flush_house(cards) { return PokerHand::FlushHouse; }
-    if is_five_of_a_kind(cards) { return PokerHand::FiveOfAKind; }
-    if is_straight_flush(cards, four_fingers, shortcut, smeared) { return PokerHand::StraightFlush; }
-    if is_four_of_a_kind(cards) { return PokerHand::FourOfAKind; }
-    if is_full_house(cards) { return PokerHand::FullHouse; }
-    if is_flush(cards, four_fingers, smeared) { return PokerHand::Flush; }
-    if is_straight(cards, shortcut) { return PokerHand::Straight; }
-    if is_three_of_a_kind(cards) { return PokerHand::ThreeOfAKind; }
-    if is_two_pair(cards) { return PokerHand::TwoPair; }
-    if is_pair(cards) { return PokerHand::Pair; }
-    
+    if is_flush_five(cards, smeared) {
+        return PokerHand::FlushFive;
+    }
+    if is_flush_house(cards, smeared) {
+        return PokerHand::FlushHouse;
+    }
+    if is_five_of_a_kind(cards) {
+        return PokerHand::FiveOfAKind;
+    }
+    if is_straight_flush(cards, four_fingers, shortcut, smeared) {
+        return PokerHand::StraightFlush;
+    }
+    if is_four_of_a_kind(cards) {
+        return PokerHand::FourOfAKind;
+    }
+    if is_full_house(cards) {
+        return PokerHand::FullHouse;
+    }
+    if is_flush(cards, four_fingers, smeared) {
+        return PokerHand::Flush;
+    }
+    if is_straight(cards, four_fingers, shortcut) {
+        return PokerHand::Straight;
+    }
+    if is_three_of_a_kind(cards) {
+        return PokerHand::ThreeOfAKind;
+    }
+    if is_two_pair(cards) {
+        return PokerHand::TwoPair;
+    }
+    if is_pair(cards) {
+        return PokerHand::Pair;
+    }
+
     PokerHand::HighCard
 }
 
@@ -580,150 +616,24 @@ fn count_ranks(cards: &[Card]) -> std::collections::HashMap<Rank, usize> {
     counts
 }
 
-fn is_all_same_suit(cards: &[Card], smeared: bool) -> bool {
-    if cards.len() < 5 { return false; }
-    
-    if cards.iter().any(|c| card_is_stone(c)) {
-        return false;
-    }
-
-    let non_wild_suits: Vec<Suit> = cards.iter()
-        .filter(|c| c.enhancement != Some(Enhancement::Wild))
-        .map(|c| c.suit)
-        .collect();
-
-    if non_wild_suits.is_empty() {
-        return true;
-    }
-
-    if smeared {
-        // Smeared Joker 模式：红色和黑色分别作为同一花色
-        let has_red = non_wild_suits.iter().any(|s| *s == Suit::Hearts || *s == Suit::Diamonds);
-        let has_black = non_wild_suits.iter().any(|s| *s == Suit::Spades || *s == Suit::Clubs);
-        let has_mixed = has_red && has_black;
-        !has_mixed
-    } else {
-        let first_suit = non_wild_suits[0];
-        non_wild_suits.iter().all(|&s| s == first_suit)
-    }
-}
-
-fn is_sequential(cards: &[Card], shortcut: bool, _smeared: bool) -> bool {
-    if cards.len() < 5 { return false; }
-    
-    if cards.iter().any(|c| card_is_stone(c)) {
-        return false;
-    }
-    
-    let mut rank_nums: Vec<u8> = cards.iter().map(|c| match c.rank {
-        Rank::Two => 2, Rank::Three => 3, Rank::Four => 4, Rank::Five => 5,
-        Rank::Six => 6, Rank::Seven => 7, Rank::Eight => 8, Rank::Nine => 9,
-        Rank::Ten => 10, Rank::Jack => 11, Rank::Queen => 12, Rank::King => 13,
-        Rank::Ace => 14,
-    }).collect();
-    
-    rank_nums.sort_unstable();
-    
-    let mut unique_nums = rank_nums.clone();
-    unique_nums.dedup();
-    if unique_nums.len() < 5 { return false; }
-
-    // 标准顺子：连续5个
-    if rank_nums[4] - rank_nums[0] == 4 {
-        return true;
-    }
-
-    // Ace 低顺
-    if rank_nums == vec![2, 3, 4, 5, 14] {
-        return true;
-    }
-
-    // Shortcut：允许有间隔
-    if shortcut {
-        if is_shortcut_straight(&unique_nums) {
-            return true;
-        }
-    }
-
-    false
-}
-
-fn is_shortcut_straight(unique_nums: &[u8]) -> bool {
-    if unique_nums.len() < 5 { return false; }
-
-    // 尝试找到5张卡的间隔顺子（每个间隔最多1）
-    for i in 0..=unique_nums.len() - 5 {
-        let subset = &unique_nums[i..i+5];
-        if is_valid_shortcut(subset) {
-            return true;
-        }
-    }
-
-    false
-}
-
-fn is_valid_shortcut(five_ranks: &[u8]) -> bool {
-    // 检查5张卡是否能形成间隔最多为1的顺子
-    let mut gaps = 0;
-    for i in 0..4 {
-        let diff = five_ranks[i+1] - five_ranks[i];
-        if diff == 1 {
-            // 没有间隔
-        } else if diff == 2 {
-            // 有1个间隔
-            gaps += 1;
-        } else {
-            // 间隔太大
-            return false;
-        }
-    }
-    gaps <= 4  // 允许最多4个间隔（每个位置一个）
-}
-
 fn is_flush(cards: &[Card], four_fingers: bool, smeared: bool) -> bool {
-    let non_stone_cards: Vec<Card> = cards.iter()
-        .filter(|c| c.enhancement != Some(Enhancement::Stone))
-        .copied()
-        .collect();
-    
-    let min_cards = if four_fingers { 4 } else { 5 };
-    
-    if non_stone_cards.len() < min_cards { return false; }
-
-    if smeared {
-        // Smeared 模式：红黑分开计数
-        let red_cards = non_stone_cards.iter().filter(|c| {
-            if c.enhancement == Some(Enhancement::Wild) { return true; }
-            c.suit == Suit::Hearts || c.suit == Suit::Diamonds
-        }).count();
-        
-        let black_cards = non_stone_cards.iter().filter(|c| {
-            if c.enhancement == Some(Enhancement::Wild) { return true; }
-            c.suit == Suit::Spades || c.suit == Suit::Clubs
-        }).count();
-
-        red_cards >= min_cards || black_cards >= min_cards
-    } else {
-        is_all_same_suit(&non_stone_cards, false) && non_stone_cards.len() >= min_cards
-    }
+    find_flush_indices(cards, four_fingers, smeared).is_some()
 }
 
-fn is_straight(cards: &[Card], shortcut: bool) -> bool {
-    if cards.len() < 5 { return false; }
-    
-    if cards.iter().any(|c| card_is_stone(c)) {
+fn is_straight(cards: &[Card], four_fingers: bool, shortcut: bool) -> bool {
+    find_straight_indices(cards, four_fingers, shortcut).is_some()
+}
+
+fn is_flush_five(cards: &[Card], smeared: bool) -> bool {
+    cards.len() == 5
+        && flush_candidate(cards, &[0, 1, 2, 3, 4], smeared)
+        && count_ranks(cards).values().any(|&count| count == 5)
+}
+
+fn is_flush_house(cards: &[Card], smeared: bool) -> bool {
+    if cards.len() != 5 || !flush_candidate(cards, &[0, 1, 2, 3, 4], smeared) {
         return false;
     }
-    
-    is_sequential(cards, shortcut, false)
-}
-
-fn is_flush_five(cards: &[Card]) -> bool {
-    cards.len() == 5 && is_all_same_suit(cards, false) && count_ranks(cards).values().any(|&count| count == 5)
-}
-
-fn is_flush_house(cards: &[Card]) -> bool {
-    if cards.len() != 5 || !is_all_same_suit(cards, false) { return false; }
     let counts = count_ranks(cards);
     let values: Vec<&usize> = counts.values().collect();
     values.contains(&&3) && values.contains(&&2)
@@ -734,22 +644,100 @@ fn is_five_of_a_kind(cards: &[Card]) -> bool {
 }
 
 fn is_straight_flush(cards: &[Card], four_fingers: bool, shortcut: bool, smeared: bool) -> bool {
-    let non_stone_cards: Vec<Card> = cards.iter()
-        .filter(|c| c.enhancement != Some(Enhancement::Stone))
-        .copied()
-        .collect();
-    
-    let min_cards = if four_fingers { 4 } else { 5 };
-    
-    if non_stone_cards.len() < min_cards { return false; }
+    if four_fingers {
+        find_straight_indices(cards, true, shortcut).is_some()
+            && find_flush_indices(cards, true, smeared).is_some()
+    } else {
+        combinations(cards, 5).into_iter().any(|indices| {
+            straight_candidate(cards, &indices, shortcut)
+                && flush_candidate(cards, &indices, smeared)
+        })
+    }
+}
 
-    // 检查是否是 Flush
-    if !is_flush(cards, four_fingers, smeared) {
+fn combinations(cards: &[Card], size: usize) -> Vec<Vec<usize>> {
+    fn build(
+        candidates: &[usize],
+        size: usize,
+        start: usize,
+        current: &mut Vec<usize>,
+        result: &mut Vec<Vec<usize>>,
+    ) {
+        if current.len() == size {
+            result.push(current.clone());
+            return;
+        }
+        for position in start..candidates.len() {
+            current.push(candidates[position]);
+            build(candidates, size, position + 1, current, result);
+            current.pop();
+        }
+    }
+
+    let candidates: Vec<usize> = cards
+        .iter()
+        .enumerate()
+        .filter_map(|(index, card)| (!card_is_stone(card)).then_some(index))
+        .collect();
+    let mut result = Vec::new();
+    build(&candidates, size, 0, &mut Vec::new(), &mut result);
+    result
+}
+
+fn straight_candidate(cards: &[Card], indices: &[usize], shortcut: bool) -> bool {
+    let mut ranks: Vec<u8> = indices
+        .iter()
+        .map(|&index| rank_order(cards[index].rank))
+        .collect();
+    ranks.sort_unstable();
+    ranks.dedup();
+    if ranks.len() != indices.len() {
         return false;
     }
 
-    // 检查是否是 Straight
-    is_sequential(&non_stone_cards, shortcut, smeared)
+    fn valid(ranks: &[u8], shortcut: bool) -> bool {
+        ranks.windows(2).all(|pair| {
+            let difference = pair[1] - pair[0];
+            difference == 1 || (shortcut && difference == 2)
+        })
+    }
+
+    if valid(&ranks, shortcut) {
+        return true;
+    }
+    if let Some(ace) = ranks.iter().position(|&rank| rank == 14) {
+        ranks[ace] = 1;
+        ranks.sort_unstable();
+        return valid(&ranks, shortcut);
+    }
+    false
+}
+
+fn flush_candidate(cards: &[Card], indices: &[usize], smeared: bool) -> bool {
+    const SUITS: [Suit; 4] = [Suit::Spades, Suit::Hearts, Suit::Clubs, Suit::Diamonds];
+    SUITS.iter().any(|&suit| {
+        indices
+            .iter()
+            .all(|&index| card_matches_suit(cards[index], suit, smeared))
+    })
+}
+
+fn find_straight_indices(cards: &[Card], four_fingers: bool, shortcut: bool) -> Option<Vec<usize>> {
+    let minimum = if four_fingers { 4 } else { 5 };
+    (minimum..=5).rev().find_map(|size| {
+        combinations(cards, size)
+            .into_iter()
+            .find(|indices| straight_candidate(cards, indices, shortcut))
+    })
+}
+
+fn find_flush_indices(cards: &[Card], four_fingers: bool, smeared: bool) -> Option<Vec<usize>> {
+    let minimum = if four_fingers { 4 } else { 5 };
+    (minimum..=5).rev().find_map(|size| {
+        combinations(cards, size)
+            .into_iter()
+            .find(|indices| flush_candidate(cards, indices, smeared))
+    })
 }
 
 fn is_four_of_a_kind(cards: &[Card]) -> bool {
@@ -782,64 +770,639 @@ fn card_is_stone(card: &Card) -> bool {
 
 // ==================== 提取计分卡牌函数 ====================
 
-fn get_scored_cards(cards: &[Card], hand: PokerHand) -> Vec<Card> {
-    let cards_filtered: Vec<Card> = cards.iter().filter(|c| !card_is_stone(c)).copied().collect();
-    let counts = count_ranks(&cards_filtered);
-    
+fn get_scored_indices(cards: &[Card], hand: PokerHand, jokers: &[JokerCard]) -> Vec<usize> {
+    let counts = count_ranks(cards);
+    let four_fingers = jokers.iter().any(|joker| joker.joker == Joker::FourFingers);
+    let shortcut = jokers.iter().any(|joker| joker.joker == Joker::Shortcut);
+    let smeared = jokers
+        .iter()
+        .any(|joker| joker.joker == Joker::SmearedJoker);
+
     match hand {
-        PokerHand::FlushFive | PokerHand::FlushHouse | PokerHand::StraightFlush | 
-        PokerHand::FullHouse | PokerHand::Flush | PokerHand::Straight => {
-            cards_filtered
+        PokerHand::FlushFive | PokerHand::FlushHouse | PokerHand::FullHouse => cards
+            .iter()
+            .enumerate()
+            .filter_map(|(index, card)| (!card_is_stone(card)).then_some(index))
+            .collect(),
+        PokerHand::StraightFlush => {
+            if four_fingers {
+                let mut indices = find_straight_indices(cards, true, shortcut).unwrap_or_default();
+                indices.extend(find_flush_indices(cards, true, smeared).unwrap_or_default());
+                indices.sort_unstable();
+                indices.dedup();
+                indices
+            } else {
+                combinations(cards, 5)
+                    .into_iter()
+                    .find(|indices| {
+                        straight_candidate(cards, indices, shortcut)
+                            && flush_candidate(cards, indices, smeared)
+                    })
+                    .unwrap_or_default()
+            }
         }
-        
-        PokerHand::FiveOfAKind => {
-            if counts.is_empty() { return vec![]; }
-            let (target_rank, _) = counts.iter().find(|&(_, count)| *count == 5).unwrap();
-            cards_filtered.iter().filter(|c| c.rank == *target_rank).copied().collect()
+        PokerHand::Flush => find_flush_indices(cards, four_fingers, smeared).unwrap_or_default(),
+        PokerHand::Straight => {
+            find_straight_indices(cards, four_fingers, shortcut).unwrap_or_default()
         }
-        PokerHand::FourOfAKind => {
-            if counts.is_empty() { return vec![]; }
-            let (target_rank, _) = counts.iter().find(|&(_, count)| *count >= 4).unwrap();
-            cards_filtered.iter().filter(|c| c.rank == *target_rank).copied().collect()
-        }
-        PokerHand::ThreeOfAKind => {
-            if counts.is_empty() { return vec![]; }
-            let (target_rank, _) = counts.iter().find(|&(_, count)| *count >= 3).unwrap();
-            cards_filtered.iter().filter(|c| c.rank == *target_rank).copied().collect()
-        }
-        PokerHand::Pair => {
-            if counts.is_empty() { return vec![]; }
-            let (target_rank, _) = counts.iter().find(|&(_, count)| *count >= 2).unwrap();
-            cards_filtered.iter().filter(|c| c.rank == *target_rank).copied().collect()
-        }
-        
+        PokerHand::FiveOfAKind => rank_group_indices(cards, &counts, 5),
+        PokerHand::FourOfAKind => rank_group_indices(cards, &counts, 4),
+        PokerHand::ThreeOfAKind => rank_group_indices(cards, &counts, 3),
+        PokerHand::Pair => rank_group_indices(cards, &counts, 2),
         PokerHand::TwoPair => {
-            let mut target_ranks: Vec<Rank> = counts.iter()
+            let mut target_ranks: Vec<Rank> = counts
+                .iter()
                 .filter(|&(_, count)| *count >= 2)
                 .map(|(&rank, _)| rank)
                 .collect();
-            
-            target_ranks.sort_unstable_by_key(|r| match r {
-                Rank::Two => 2, Rank::Three => 3, Rank::Four => 4, Rank::Five => 5,
-                Rank::Six => 6, Rank::Seven => 7, Rank::Eight => 8, Rank::Nine => 9,
-                Rank::Ten => 10, Rank::Jack => 11, Rank::Queen => 12, Rank::King => 13,
-                Rank::Ace => 14,
-            });
+            target_ranks.sort_unstable_by_key(|rank| rank_order(*rank));
             target_ranks.reverse();
             target_ranks.truncate(2);
+            cards
+                .iter()
+                .enumerate()
+                .filter_map(|(index, card)| {
+                    (!card_is_stone(card) && target_ranks.contains(&card.rank)).then_some(index)
+                })
+                .collect()
+        }
+        PokerHand::HighCard => cards
+            .iter()
+            .enumerate()
+            .filter(|(_, card)| !card_is_stone(card))
+            .max_by_key(|(_, card)| rank_order(card.rank))
+            .map(|(index, _)| vec![index])
+            .unwrap_or_default(),
+    }
+}
 
-            cards_filtered.iter().filter(|c| target_ranks.contains(&c.rank)).copied().collect()
+fn rank_group_indices(
+    cards: &[Card],
+    counts: &std::collections::HashMap<Rank, usize>,
+    minimum: usize,
+) -> Vec<usize> {
+    let Some((&target_rank, _)) = counts.iter().find(|(_, count)| **count >= minimum) else {
+        return Vec::new();
+    };
+    cards
+        .iter()
+        .enumerate()
+        .filter_map(|(index, card)| {
+            (!card_is_stone(card) && card.rank == target_rank).then_some(index)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn round(yaml: &str) -> Round {
+        serde_yaml::from_str(yaml).expect("test round should be valid YAML")
+    }
+
+    fn total(yaml: &str) -> f64 {
+        let (chips, mult) = score(round(yaml));
+        (chips * mult).floor()
+    }
+
+    fn hand(yaml: &str) -> PokerHand {
+        let round = round(yaml);
+        determine_poker_hand(&round.cards_played, &round.jokers)
+    }
+
+    macro_rules! assert_hand {
+        ($yaml:literal, $expected:expr) => {
+            assert_eq!(
+                hand(concat!(
+                    "cards_played: ",
+                    $yaml,
+                    "\ncards_held_in_hand: []\njokers: []\n"
+                )),
+                $expected
+            );
+        };
+    }
+
+    #[test]
+    fn recognises_every_poker_hand() {
+        assert_hand!("[A♠, Q♦, 9♦, 4♣, 3♦]", PokerHand::HighCard);
+        assert_hand!("[K♠, 9♠, 9♦, 6♥, 3♦]", PokerHand::Pair);
+        assert_hand!("[A♥, A♦, Q♣, 4♥, 4♣]", PokerHand::TwoPair);
+        assert_hand!("[10♠, 10♣, 10♦, 6♥, 5♦]", PokerHand::ThreeOfAKind);
+        assert_hand!("[J♦, 10♣, 9♣, 8♠, 7♥]", PokerHand::Straight);
+        assert_hand!("[A♥, K♥, 10♥, 5♥, 4♥]", PokerHand::Flush);
+        assert_hand!("[K♥, K♣, K♦, 2♠, 2♦]", PokerHand::FullHouse);
+        assert_hand!("[J♠, J♥, J♣, J♦, 3♣]", PokerHand::FourOfAKind);
+        assert_hand!("[Q♠, J♠, 10♠, 9♠, 8♠]", PokerHand::StraightFlush);
+        assert_hand!("[A♠, A♥, A♥, A♣, A♦]", PokerHand::FiveOfAKind);
+        assert_hand!("[7♦, 7♦, 7♦, 4♦, 4♦]", PokerHand::FlushHouse);
+        assert_hand!("[A♠, A♠, A♠, A♠, A♠]", PokerHand::FlushFive);
+    }
+
+    #[test]
+    fn recognises_ace_low_but_not_wrapping_straights() {
+        assert_hand!("[A♠, 2♦, 3♦, 4♠, 5♠]", PokerHand::Straight);
+        assert_hand!("[Q♠, K♦, A♦, 2♦, 3♠]", PokerHand::HighCard);
+    }
+
+    #[test]
+    fn scores_all_card_modifiers_in_order() {
+        assert_eq!(
+            total(
+                r#"
+cards_played:
+  - A♥ Bonus Foil
+  - K♠ Mult Holographic
+  - Q♦ Glass Polychrome
+  - J♣ Wild
+  - 10♥ Steel
+cards_held_in_hand:
+  - K♠ Steel Foil
+  - 7♠ Steel Holographic
+  - 3♠ Steel Polychrome
+jokers: []
+"#
+            ),
+            29342.0
+        );
+    }
+
+    #[test]
+    fn stone_always_scores_but_has_no_rank_or_suit() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [2♥, 3♥, 4♥, 5♥, A♠ Stone Foil]
+cards_held_in_hand: []
+jokers: [Hack, Greedy Joker, Scary Face]
+"#
+            ),
+            115.0
+        );
+    }
+
+    #[test]
+    fn easy_pair_jokers_activate_in_order() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [9♥, 9♠]
+cards_held_in_hand: []
+jokers: [Joker, Jolly Joker, Sly Joker, Abstract Joker, Blackboard]
+"#
+            ),
+            6786.0
+        );
+    }
+
+    #[test]
+    fn easy_three_kind_jokers_activate() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [10♥, 10♠, 10♦]
+cards_held_in_hand: []
+jokers: [Zany Joker, Wily Joker]
+"#
+            ),
+            2400.0
+        );
+    }
+
+    #[test]
+    fn easy_two_pair_jokers_activate() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [2♥, 2♠, 3♦, 3♣]
+cards_held_in_hand: []
+jokers: [Mad Joker, Clever Joker]
+"#
+            ),
+            1320.0
+        );
+    }
+
+    #[test]
+    fn easy_straight_jokers_activate() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [2♥, 3♠, 4♦, 5♣, 6♥]
+cards_held_in_hand: []
+jokers: [The Order, Devious Joker]
+"#
+            ),
+            1800.0
+        );
+    }
+
+    #[test]
+    fn easy_flush_jokers_activate() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [2♥, 4♥, 6♥, 8♥, 10♥]
+cards_held_in_hand: []
+jokers: [The Tribe, Crafty Joker]
+"#
+            ),
+            1160.0
+        );
+    }
+
+    #[test]
+    fn diamond_ace_triggers_rank_and_suit_jokers() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [A♦]
+cards_held_in_hand: []
+jokers: [Greedy Joker, Fibonacci, Odd Todd, Scholar]
+"#
+            ),
+            1072.0
+        );
+    }
+
+    #[test]
+    fn heart_face_triggers_face_jokers() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [K♥]
+cards_held_in_hand: []
+jokers: [Lusty Joker, Scary Face, Photograph, Smiley Face]
+"#
+            ),
+            585.0
+        );
+    }
+
+    #[test]
+    fn spade_ten_triggers_scored_jokers() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [10♠]
+cards_held_in_hand: []
+jokers: [Arrowhead, Even Steven, Walkie Talkie]
+"#
+            ),
+            675.0
+        );
+    }
+
+    #[test]
+    fn club_eight_triggers_scored_jokers() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [8♣]
+cards_held_in_hand: []
+jokers: [Onyx Agate, Fibonacci, Even Steven]
+"#
+            ),
+            260.0
+        );
+    }
+
+    #[test]
+    fn held_jokers_and_mime_retrigger_per_card() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [A♥]
+cards_held_in_hand: [2♣, K♣, Q♣, 7♣ Steel]
+jokers: [Raised Fist, Baron, Shoot The Moon, Mime]
+"#
+            ),
+            1665.0
+        );
+    }
+
+    #[test]
+    fn raised_fist_uses_rightmost_lowest_card() {
+        let held = round(
+            r#"
+cards_played: [A♥]
+cards_held_in_hand: [2♣, 2♦, 3♠]
+jokers: []
+"#,
+        )
+        .cards_held_in_hand;
+        assert_eq!(get_lowest_rank_card_index(&held), Some(1));
+    }
+
+    #[test]
+    fn four_fingers_supports_four_card_hands() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [2♥, 3♠, 4♦, 5♣, 10♥]
+cards_held_in_hand: []
+jokers: [Four Fingers]
+"#
+            ),
+            176.0
+        );
+        assert_eq!(
+            total(
+                r#"
+cards_played: [2♥, 4♥, 6♥, 8♥, K♠]
+cards_held_in_hand: []
+jokers: [Four Fingers]
+"#
+            ),
+            220.0
+        );
+    }
+
+    #[test]
+    fn four_finger_straight_flush_can_use_different_cards() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [2♠, 3♠, 4♦, 5♠, 10♠]
+cards_held_in_hand: []
+jokers: [Four Fingers]
+"#
+            ),
+            992.0
+        );
+    }
+
+    #[test]
+    fn shortcut_allows_single_rank_gaps() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [2♥, 4♠, 6♦, 8♣, 10♥]
+cards_held_in_hand: []
+jokers: [Shortcut]
+"#
+            ),
+            240.0
+        );
+        assert!(!straight_candidate(
+            &round(
+                r#"
+cards_played: [2♥, 5♠, 7♦, 9♣, J♥]
+cards_held_in_hand: []
+jokers: []
+"#
+            )
+            .cards_played,
+            &[0, 1, 2, 3, 4],
+            true
+        ));
+    }
+
+    #[test]
+    fn splash_scores_every_played_card() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [A♥, 3♠, 2♦]
+cards_held_in_hand: []
+jokers: [Splash]
+"#
+            ),
+            21.0
+        );
+    }
+
+    #[test]
+    fn scored_retriggers_repeat_the_complete_card() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [2♥]
+cards_held_in_hand: []
+jokers: [Hack, Hanging Chad]
+"#
+            ),
+            13.0
+        );
+        assert_eq!(
+            total(
+                r#"
+cards_played: [K♥]
+cards_held_in_hand: []
+jokers: [Sock And Buskin]
+"#
+            ),
+            25.0
+        );
+    }
+
+    #[test]
+    fn pareidolia_changes_face_checks_and_retriggers() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [2♥]
+cards_held_in_hand: []
+jokers: [Pareidolia, Sock And Buskin]
+"#
+            ),
+            9.0
+        );
+        assert_eq!(
+            total(
+                r#"
+cards_played: [2♥]
+cards_held_in_hand: []
+jokers: [Pareidolia, Scary Face, Smiley Face]
+"#
+            ),
+            222.0
+        );
+    }
+
+    #[test]
+    fn smeared_joker_changes_flush_and_suit_effects() {
+        assert_eq!(
+            hand(
+                r#"
+cards_played: [2♥, 4♦, 6♥, 8♦, 10♥]
+cards_held_in_hand: []
+jokers: [Smeared Joker]
+"#
+            ),
+            PokerHand::Flush
+        );
+        assert_eq!(
+            total(
+                r#"
+cards_played: [2♦]
+cards_held_in_hand: []
+jokers: [Smeared Joker, Lusty Joker]
+"#
+            ),
+            28.0
+        );
+    }
+
+    #[test]
+    fn flower_pot_requires_four_distinct_cards() {
+        let success = round(
+            r#"
+cards_played: [2♦, 3♣, 4♥, 5♠]
+cards_held_in_hand: []
+jokers: []
+"#,
+        );
+        assert!(flower_pot_matches(&success.cards_played, false));
+
+        let failure = round(
+            r#"
+cards_played: [Q♠ Wild, Q♣, 3♣, 3♣]
+cards_held_in_hand: []
+jokers: []
+"#,
+        );
+        assert!(!flower_pot_matches(&failure.cards_played, true));
+    }
+
+    #[test]
+    fn blueprint_resolves_chains_but_not_passive_jokers() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [A♥]
+cards_held_in_hand: []
+jokers: [Blueprint, Joker]
+"#
+            ),
+            144.0
+        );
+
+        let copied = round(
+            r#"
+cards_played: [A♥]
+cards_held_in_hand: []
+jokers: [Blueprint, Blueprint, Joker]
+"#,
+        );
+        assert_eq!(
+            effective_jokers(&copied.jokers).collect::<Vec<_>>(),
+            vec![Joker::Joker, Joker::Joker, Joker::Joker]
+        );
+
+        let passive = round(
+            r#"
+cards_played: [A♥]
+cards_held_in_hand: []
+jokers: [Blueprint, Splash]
+"#,
+        );
+        assert_eq!(effective_joker_at(&passive.jokers, 0), None);
+    }
+
+    #[test]
+    fn joker_editions_apply_around_independent_ability() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [A♥]
+cards_held_in_hand: []
+jokers: [Joker Foil, Joker Holographic, Joker Polychrome]
+"#
+            ),
+            2277.0
+        );
+    }
+
+    #[test]
+    fn wild_cards_can_complete_flushes() {
+        assert_eq!(
+            hand(
+                r#"
+cards_played: [2♥, 5♣ Wild, 5♥, 6♥, 6♠ Wild]
+cards_held_in_hand: []
+jokers: []
+"#
+            ),
+            PokerHand::Flush
+        );
+    }
+
+    #[test]
+    fn blackboard_accepts_wild_cards_and_flower_pot_scores() {
+        assert_eq!(
+            total(
+                r#"
+cards_played: [2♦, 3♣, 4♥, 5♠, 6♦]
+cards_held_in_hand: [A♥ Wild]
+jokers: [Blackboard, Flower Pot]
+"#
+            ),
+            1800.0
+        );
+        assert_eq!(
+            total(
+                r#"
+cards_played: [2♦, 3♣, 4♥, 5♠, 6♦]
+cards_held_in_hand: [A♣]
+jokers: [Blackboard]
+"#
+            ),
+            600.0
+        );
+    }
+
+    #[test]
+    fn scored_indices_cover_complete_and_rank_hands() {
+        for yaml in [
+            r#"
+cards_played: [7♦, 7♦, 7♦, 4♦, 4♦]
+cards_held_in_hand: []
+jokers: []
+"#,
+            r#"
+cards_played: [A♠, A♠, A♠, A♠, A♠]
+cards_held_in_hand: []
+jokers: []
+"#,
+            r#"
+cards_played: [K♥, K♣, K♦, 2♠, 2♦]
+cards_held_in_hand: []
+jokers: []
+"#,
+            r#"
+cards_played: [Q♠, J♠, 10♠, 9♠, 8♠]
+cards_held_in_hand: []
+jokers: []
+"#,
+            r#"
+cards_played: [A♠, A♥, A♥, A♣, A♦]
+cards_held_in_hand: []
+jokers: []
+"#,
+            r#"
+cards_played: [J♠, J♥, J♣, J♦, 3♣]
+cards_held_in_hand: []
+jokers: []
+"#,
+        ] {
+            let round = round(yaml);
+            let hand = determine_poker_hand(&round.cards_played, &round.jokers);
+            assert!(!get_scored_indices(&round.cards_played, hand, &round.jokers).is_empty());
         }
-        
-        PokerHand::HighCard => {
-            if cards_filtered.is_empty() { return vec![]; }
-            let max_card = cards_filtered.iter().max_by_key(|c| match c.rank {
-                Rank::Two => 2, Rank::Three => 3, Rank::Four => 4, Rank::Five => 5,
-                Rank::Six => 6, Rank::Seven => 7, Rank::Eight => 8, Rank::Nine => 9,
-                Rank::Ten => 10, Rank::Jack => 11, Rank::Queen => 12, Rank::King => 13,
-                Rank::Ace => 14,
-            }).unwrap();
-            vec![*max_card]
-        }
+    }
+
+    #[test]
+    fn missing_rank_group_has_no_scored_indices() {
+        let round = round(
+            r#"
+cards_played: [A♠]
+cards_held_in_hand: []
+jokers: []
+"#,
+        );
+        let counts = count_ranks(&round.cards_played);
+        assert!(rank_group_indices(&round.cards_played, &counts, 5).is_empty());
     }
 }
