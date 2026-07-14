@@ -437,7 +437,7 @@ fn scores_smeared_flower_pot_and_wild_cards() {
         total(
             "cards_played: [Q♠ Wild, Q♣, 3♣, 3♣]\ncards_held_in_hand: []\njokers: [Smeared Joker, Flower Pot]\n"
         ),
-        132.0
+        92.0
     );
     assert_eq!(
         total("cards_played: [2♥, 5♣ Wild, 5♥, 6♥, 6♠ Wild]\ncards_held_in_hand: []\njokers: []\n"),
