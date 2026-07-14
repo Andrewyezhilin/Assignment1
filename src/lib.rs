@@ -1,51 +1,10 @@
-//stage5
-use std::{
-    error::Error,
-    fs::File,
-    io::{Read, stdin},
-    path::{Path, PathBuf},
-};
+use std::collections::HashMap;
 
-use clap::Parser;
 use ortalib::{
     Card, Chips, Edition, Enhancement, Joker, JokerCard, Mult, PokerHand, Rank, Round, Suit,
 };
 
-#[derive(Parser)]
-struct Opts {
-    file: PathBuf,
-
-    #[arg(long)]
-    explain: bool,
-}
-
-#[cfg(not(tarpaulin_include))]
-fn main() -> Result<(), Box<dyn Error>> {
-    let opts = Opts::parse();
-    let round = parse_round(&opts)?;
-
-    let (chips, mult) = score(round);
-
-    println!("{}", (chips * mult).floor());
-    Ok(())
-}
-
-#[cfg(not(tarpaulin_include))]
-fn parse_round(opts: &Opts) -> Result<Round, Box<dyn Error>> {
-    let mut input = String::new();
-    if opts.file == Path::new("-") {
-        stdin().read_to_string(&mut input)?;
-    } else {
-        File::open(&opts.file)?.read_to_string(&mut input)?;
-    }
-
-    let round = serde_yaml::from_str(&input)?;
-    Ok(round)
-}
-
-// ==================== Stage 5 核心计分逻辑 ====================
-
-fn score(round: Round) -> (Chips, Mult) {
+pub fn score(round: Round) -> (Chips, Mult) {
     let played_cards = round.cards_played.clone();
 
     let best_hand = determine_poker_hand(&played_cards, &round.jokers);
@@ -606,8 +565,8 @@ fn determine_poker_hand(cards: &[Card], jokers: &[JokerCard]) -> PokerHand {
 
 // ==================== 牌型辅助判定函数 ====================
 
-fn count_ranks(cards: &[Card]) -> std::collections::HashMap<Rank, usize> {
-    let mut counts = std::collections::HashMap::new();
+fn count_ranks(cards: &[Card]) -> HashMap<Rank, usize> {
+    let mut counts = HashMap::new();
     for card in cards {
         if card.enhancement != Some(Enhancement::Stone) {
             *counts.entry(card.rank).or_insert(0) += 1;
@@ -836,11 +795,7 @@ fn get_scored_indices(cards: &[Card], hand: PokerHand, jokers: &[JokerCard]) -> 
     }
 }
 
-fn rank_group_indices(
-    cards: &[Card],
-    counts: &std::collections::HashMap<Rank, usize>,
-    minimum: usize,
-) -> Vec<usize> {
+fn rank_group_indices(cards: &[Card], counts: &HashMap<Rank, usize>, minimum: usize) -> Vec<usize> {
     let Some((&target_rank, _)) = counts.iter().find(|(_, count)| **count >= minimum) else {
         return Vec::new();
     };
@@ -852,7 +807,3 @@ fn rank_group_indices(
         })
         .collect()
 }
-
-#[cfg(test)]
-#[path = "tests/scoring/mod.rs"]
-mod tests;
